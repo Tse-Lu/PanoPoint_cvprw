@@ -113,8 +113,10 @@ class DetectionHead(nn.Module):
 
 
 class DescriptionHead(nn.Module):
-    def __init__(self):
+    def __init__(self, upsample=True):
         super().__init__()
+
+        self.upsample = upsample
 
         self.head = nn.Sequential(
             nn.Conv2d(128, 256, 3, 1, 1),
@@ -125,14 +127,15 @@ class DescriptionHead(nn.Module):
         )
 
     def forward(self, x):
-        desc = self.head(x)  
+        desc = self.head(x)
 
-        desc = F.interpolate(
-            desc,
-            scale_factor=8,
-            mode='bilinear',
-            align_corners=False
-        ) 
+        if self.upsample:
+            desc = F.interpolate(
+                desc,
+                scale_factor=8,
+                mode='bilinear',
+                align_corners=False
+            )
 
         desc = F.normalize(
             desc,
@@ -144,12 +147,12 @@ class DescriptionHead(nn.Module):
 
 
 class BaseDetector(nn.Module):
-    def __init__(self):
+    def __init__(self, upsample=True):
         super().__init__()
 
         self.backbone = Encoder()
         self.detector = DetectionHead()
-        self.descriptor = DescriptionHead()
+        self.descriptor = DescriptionHead(upsample=upsample)
 
     def forward(self, x):
         feat = self.backbone(x)

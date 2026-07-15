@@ -10,6 +10,8 @@ class PanoPointDetector:
         self.model = BaseDetector().to(self.device)
         
         checkpoint = torch.load(weights_path, map_location=self.device)
+        if isinstance(checkpoint, dict) and 'model' in checkpoint:
+            checkpoint = checkpoint['model']
         self.model.load_state_dict(checkpoint)
         self.model.eval()
         
@@ -40,17 +42,19 @@ class PanoPointDetector:
         return np.array(keep)
 
     def detect(self, img_tensor):
+        # Ensure model input is 480×960 (the training resolution)
+        H_in, W_in = img_tensor.shape[2], img_tensor.shape[3]
+        if H_in != 480 or W_in != 960:
+            scale_y = H_in / 480
+            scale_x = W_in / 960
+            img_tensor = F.interpolate(img_tensor, size=(480, 960), mode='bilinear', align_corners=True)
+        else:
+            scale_x, scale_y = 1.0, 1.0
+
         with torch.no_grad():
             logits, desc = self.model(img_tensor)
 
-            # manual calibration: the detector head BN is poorly trained (running_var ~2000),
-            # causing dustbin to dominate softmax. We calibrate by scaling the dustbin logit down.
-            dustbin_logit = logits[:, 64:65, :, :]
-            spatial_logits = logits[:, :64, :, :]
-            # reduce dustbin logit so it doesn't suppress spatial bins
-            calibrated = torch.cat([spatial_logits * 2.0, dustbin_logit * 0.5], dim=1)
-
-            prob = F.softmax(calibrated, dim=1)
+            prob = F.softmax(logits, dim=1)
             nodust = prob[:, :-1, :, :]
             B, C, H, W = nodust.shape
             heatmap = nodust.permute(0, 2, 3, 1).reshape(B, H, W, 8, 8)
@@ -82,12 +86,17 @@ class PanoPointDetector:
             N = pts.shape[0]
             grid_x = (pts[:, 0:1] / (W*8 - 1)) * 2 - 1
             grid_y = (pts[:, 1:2] / (H*8 - 1)) * 2 - 1
-            grid = torch.stack([grid_x, grid_y], dim=-1).reshape(1, 1, N, 2) # [1, 1, N, 2]
+            grid = torch.stack([grid_x, grid_y], dim=-1).reshape(1, 1, N, 2)
             
             descriptors = F.grid_sample(desc, grid, mode='bilinear', align_corners=True)
-            descriptors = F.normalize(descriptors.reshape(256, N), p=2, dim=0).t() 
+            descriptors = F.normalize(descriptors.reshape(256, N), p=2, dim=0).t()
 
-            return pts.cpu().numpy(), descriptors.cpu().numpy()
+            # Scale keypoints back to original resolution
+            pts_cpu = pts.cpu().numpy()
+            pts_cpu[:, 0] *= scale_x
+            pts_cpu[:, 1] *= scale_y
+
+            return pts_cpu, descriptors.cpu().numpy()
 
 def visualize_matches(img1_path, img2_path, weights_path):
     detector = PanoPointDetector(weights_path)
